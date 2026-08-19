@@ -1,4 +1,5 @@
 import os
+import argparse
 
 import pandas as pd
 
@@ -8,10 +9,23 @@ pd.set_option("display.width", None)
 pd.set_option("display.max_colwidth", None)
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
-src_engine = os.path.join(base_dir, "engine_step.xlsx")
-src_time = os.path.join(base_dir, "time_analysis.xlsx")
-dst = os.path.join(base_dir, "trace_model.xlsx")
-dst_avg = os.path.join(base_dir, "trace_model_avg.xlsx")
+
+parser = argparse.ArgumentParser(
+    description="Process trace analysis xlsx files into model-level reports."
+)
+parser.add_argument(
+    "trace_log_dir",
+    nargs="?",
+    default=base_dir,
+    help="Directory containing time_analysis.xlsx and engine_step.xlsx",
+)
+args = parser.parse_args()
+
+trace_log_dir = os.path.abspath(args.trace_log_dir)
+src_engine = os.path.join(trace_log_dir, "engine_step.xlsx")
+src_time = os.path.join(trace_log_dir, "time_analysis.xlsx")
+dst = os.path.join(trace_log_dir, "trace_model.xlsx")
+dst_avg = os.path.join(trace_log_dir, "trace_model_avg.xlsx")
 
 sheet_configs = [
     {"source_sheet": "engine_step", "target_sheet": "engine_step"},
@@ -63,6 +77,8 @@ with pd.ExcelWriter(dst, engine="openpyxl") as writer:
         "Add need pulling sequence",
         "Start pull kv",
         "Finish pull kv",
+        "Prefill KV pool get start",
+        "Prefill KV pool get finish",
     ]
     for col in time_cols:
         df_ta[col] = pd.to_numeric(df_ta[col], errors="coerce")
@@ -89,6 +105,10 @@ with pd.ExcelWriter(dst, engine="openpyxl") as writer:
     result_ta["pull kv耗时(ms)"] = (df_ta["Finish pull kv"] - df_ta["Start pull kv"]) * 1000
     result_ta["pull kv排队耗时(ms)"] = (
         df_ta["Start pull kv"] - df_ta["Add need pulling sequence"]
+    ) * 1000
+    result_ta["KV pool get耗时(ms)"] = (
+        df_ta["Prefill KV pool get finish"]
+        - df_ta["Prefill KV pool get start"]
     ) * 1000
 
     avg_row_ta = {"来源": "time_analysis"}

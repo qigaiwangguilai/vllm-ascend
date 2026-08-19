@@ -79,6 +79,76 @@ targets:
       for request_id in done_recving or ():
           log_action("Finish pull kv", request_id)
 
+  - module: "vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector:MooncakeConnectorWorker"
+    trace_scope: worker
+    function_name: start_load_kv
+    entry_operation: |
+      from vllm_ascend.trace.utils import log_action
+      metadata = args[0] if args else kwargs.get("metadata")
+      for request_id in getattr(metadata, "requests", {}) or {}:
+          log_action("Start pull kv", request_id)
+
+  - module: "vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector:MooncakeConnectorWorker"
+    trace_scope: worker
+    function_name: get_finished
+    exit_operation: |
+      from vllm_ascend.trace.utils import log_action
+      done_recving = result[1] if result and len(result) > 1 else set()
+      for request_id in done_recving or ():
+          log_action("Finish pull kv", request_id)
+
+  - module: "vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.pool_worker:KVPoolWorker"
+    trace_scope: worker
+    function_name: start_load_kv
+    entry_operation: |
+      import os
+      from vllm_ascend.trace.utils import log_action
+      metadata = args[0] if args else kwargs.get("metadata")
+      if os.getenv("ROLE") == "prefill" and not self.use_layerwise:
+          for request in getattr(metadata, "requests", []) or []:
+              load_spec = getattr(request, "load_spec", None)
+              if load_spec is not None and load_spec.can_load:
+                  log_action("Prefill KV pool get start", request.req_id)
+    exit_operation: |
+      import os
+      from vllm_ascend.trace.utils import log_action
+      metadata = args[0] if args else kwargs.get("metadata")
+      if (
+          os.getenv("ROLE") == "prefill"
+          and not self.load_async
+          and not self.use_layerwise
+      ):
+          for request in getattr(metadata, "requests", []) or []:
+              load_spec = getattr(request, "load_spec", None)
+              if load_spec is not None and load_spec.can_load:
+                  log_action("Prefill KV pool get finish", request.req_id)
+
+  - module: "vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.pool_worker:KVPoolWorker"
+    trace_scope: worker
+    function_name: wait_for_save
+    entry_operation: |
+      import os
+      from vllm_ascend.trace.utils import log_action
+      metadata = args[0] if args else kwargs.get("connector_metadata")
+      if os.getenv("ROLE") == "prefill" and not self.use_layerwise:
+          for request in getattr(metadata, "requests", []) or []:
+              if getattr(request, "can_save", False):
+                  log_action("Prefill KV pool put start", request.req_id)
+
+  - module: "vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.pool_worker:KVPoolWorker"
+    trace_scope: worker
+    function_name: get_finished
+    exit_operation: |
+      import os
+      from vllm_ascend.trace.utils import log_action
+      if os.getenv("ROLE") == "prefill":
+          done_sending = result[0] if result and len(result) > 0 else set()
+          done_recving = result[1] if result and len(result) > 1 else set()
+          for request_id in done_sending or ():
+              log_action("Prefill KV pool put finish", request_id)
+          for request_id in done_recving or ():
+              log_action("Prefill KV pool get finish", request_id)
+
   - module: "vllm.v1.serial_utils:MsgpackDecoder"
     trace_scope: platform
     function_name: decode

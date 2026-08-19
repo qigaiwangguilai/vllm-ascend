@@ -9,6 +9,7 @@ import re
 import sys
 import traceback
 from collections import defaultdict
+from collections.abc import Callable
 
 import openpyxl  # noqa: F401
 import pandas as pd
@@ -25,6 +26,30 @@ _ACTION_ROLE_MAP: dict[str, dict[str, str]] = {
         "decode": "Add need pulling sequence",
     },
 }
+
+TimestampReducer = Callable[[float, float], float]
+
+_DEFAULT_TIMESTAMP_REDUCER: TimestampReducer = min
+_ACTION_TIMESTAMP_REDUCERS: dict[str, TimestampReducer] = {
+    "Prefill KV pool get start": min,
+    "Prefill KV pool get finish": max,
+}
+
+
+def _update_action_timestamp(
+    timestamps: dict[str, float],
+    action: str,
+    timestamp: float,
+) -> None:
+    if action not in timestamps:
+        timestamps[action] = timestamp
+        return
+
+    reducer = _ACTION_TIMESTAMP_REDUCERS.get(
+        action,
+        _DEFAULT_TIMESTAMP_REDUCER,
+    )
+    timestamps[action] = reducer(timestamps[action], timestamp)
 
 
 def _normalize_request_id(request_id):
@@ -169,7 +194,7 @@ def _get_final_df(data_by_request, request_role):
         prefill = request_role[request_id].get("prefill")
         if decode is None or prefill is None:
             print(
-                f'request_id: {request_role[request_id].get("request_id")} decode or prefill is None'
+                f'request_id: {request_id}, roles: {request_role[request_id]} decode or prefill is None'
             )
             continue
         row = {"RequestID": request_id, "P_NODE": prefill, "D_NODE": decode}
@@ -242,17 +267,12 @@ def _get_step_line(
                                 if mapped_action is None:
                                     continue
                                 action = mapped_action
-                            # min value
-                            if (
-                                action not in data_by_request[request_id]
-                                or timestamp < data_by_request[request_id][action]
-                            ):
-                                data_by_request[request_id][action] = timestamp
-                            if (
-                                action not in action_timestamps
-                                or timestamp < action_timestamps[action]
-                            ):
-                                action_timestamps[action] = timestamp
+                            _update_action_timestamp(
+                                data_by_request[request_id], action, timestamp
+                            )
+                            _update_action_timestamp(
+                                action_timestamps, action, timestamp
+                            )
         except Exception as e:
             print(f"Error reading {log_file_path}: {str(e)}")
             print(traceback.print_exc())
@@ -367,6 +387,8 @@ def _get_action_map() -> dict:
         "try to schedule in waiting queue": "首次尝试加入running队列",
         "fail to add result of kv insufficient": "首次kv不足加入失败",
         "prefill_Add need pulling sequence": "prefill添加到need pulling队列",
+        "Prefill KV pool get start": "Prefill KV pool Get请求开始",
+        "Prefill KV pool get finish": "Prefill KV pool Get请求完成",
         "Prefill get new_blocks": "P侧申请完成KV",
         "success add to seq groups": "成功加入running队列",
         "Prefill start execute_model": "P开始execute model",
