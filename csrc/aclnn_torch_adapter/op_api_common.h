@@ -683,6 +683,23 @@ uint64_t CalcHashId();
 typedef int (*InitHugeMemThreadLocal)(void *, bool);
 typedef void (*UnInitHugeMemThreadLocal)(void *, bool);
 typedef void (*ReleaseHugeMem)(void *, bool);
+// Binds ACL stream resources to the current thread when enqueue/dequeue
+// requires it. The implementation resolves aclrtUseStreamResInCurrentThread
+// dynamically from libascendcl.so.
+using AclUseStreamResFunc = void (*)(void *);
+inline AclUseStreamResFunc GetUseStreamResFuncCoreNum() {
+  // Keep this lookup local to the adapter: the ACL runtime is optional and
+  // may not be linked directly into the extension.
+  static const auto func = []() -> AclUseStreamResFunc {
+    void *libacl_handle = dlopen("libascendcl.so", RTLD_NOW);
+    if (libacl_handle == nullptr) {
+      return nullptr;
+    }
+    return reinterpret_cast<AclUseStreamResFunc>(
+        dlsym(libacl_handle, "aclrtUseStreamResInCurrentThread"));
+  }();
+  return func;
+}
 
 #define EXEC_NPU_CMD(aclnn_api, ...)                                          \
   do {                                                                        \
@@ -699,6 +716,12 @@ typedef void (*ReleaseHugeMem)(void *, bool);
         #aclnn_api, " or ", #aclnn_api "GetWorkspaceSize", " not in ",        \
         GetOpApiLibName(), ", or ", GetOpApiLibName(), "not found.");         \
     auto acl_stream = c10_npu::getCurrentNPUStream().stream(false);           \
+    if (c10_npu::check_enqueue_need_use(acl_stream)) {                        \
+      auto use_stream_res = GetUseStreamResFuncCoreNum();                      \
+      if (use_stream_res) {                                                    \
+        use_stream_res(acl_stream);                                            \
+      }                                                                        \
+    }                                                                          \
     uint64_t workspace_size = 0;                                              \
     uint64_t *workspace_size_addr = &workspace_size;                          \
     aclOpExecutor *executor = nullptr;                                        \
@@ -727,6 +750,12 @@ typedef void (*ReleaseHugeMem)(void *, bool);
     }                                                                         \
     auto acl_call = [converted_params, workspace_addr, workspace_size,        \
                      acl_stream, executor]() -> int {                         \
+      if (c10_npu::check_dequeue_need_use(acl_stream)) {                       \
+        auto use_stream_res = GetUseStreamResFuncCoreNum();                    \
+        if (use_stream_res) {                                                  \
+          use_stream_res(acl_stream);                                          \
+        }                                                                      \
+      }                                                                        \
       typedef int (*OpApiFunc)(void *, uint64_t, aclOpExecutor *,             \
                                const aclrtStream);                            \
       OpApiFunc opApiFunc = reinterpret_cast<OpApiFunc>(opApiFuncAddr);       \
